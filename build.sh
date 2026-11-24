@@ -16,11 +16,12 @@ done
 lipo -create "$STAGE/LimpaLimpa-arm64" "$STAGE/LimpaLimpa-x86_64" -output "$APP/Contents/MacOS/LimpaLimpa"
 
 if [ ! -f AppIcon.icns ]; then
-  swift make_icon.swift
+  swift make_icon.swift   # a partir de Resources/icon-source.png
   iconutil -c icns AppIcon.iconset -o AppIcon.icns
   rm -rf AppIcon.iconset
 fi
 cp AppIcon.icns "$APP/Contents/Resources/"
+cp Resources/*.ttf Resources/OFL.txt "$APP/Contents/Resources/"   # Poppins (licença OFL)
 cp Info.plist "$APP/Contents/"
 
 codesign --force --deep -s - "$APP"

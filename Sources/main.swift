@@ -4,6 +4,7 @@
 import SwiftUI
 import AppKit
 import Darwin
+import SQLite3
 
 // MARK: - Básico
 
@@ -310,6 +311,100 @@ func scanCategories(_ defs: [CategoryDef], enabled: (CategoryDef) -> Bool, progr
 
 // MARK: - WhatsApp
 
+/// Lê só os NOMES de contatos e grupos dos bancos locais do WhatsApp (nada sai do Mac, nenhuma mensagem é lida).
+/// O formato dos bancos não é documentado, então a leitura é genérica: em cada tabela, junta colunas de texto
+/// com "JID"/"LID"/"WHATSAPPID" no nome (identificadores) e colunas com "NAME" (nomes).
+func whatsappNames() -> [String: String] {
+    let roots = ["group.net.whatsapp.WhatsApp.shared", "group.net.whatsapp.WhatsApp.private"]
+        .map { home + "/Library/Group Containers/" + $0 }
+    var dbs: [String] = []
+    for r in roots {
+        for f in (try? fm.contentsOfDirectory(atPath: r)) ?? [] where f.hasSuffix(".sqlite") { dbs.append(r + "/" + f) }
+    }
+    // Banco das conversas primeiro: o nome da conversa vale mais que o do contato
+    dbs.sort { ($0.contains("ChatStorage") ? 0 : 1) < ($1.contains("ChatStorage") ? 0 : 1) }
+
+    var names: [String: String] = [:]
+    var links: [(String, String)] = []   // pares LID <-> número do mesmo contato
+
+    for path in dbs {
+        var db: OpaquePointer?
+        let uri = "file:" + (path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path) + "?mode=ro"
+        guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else { sqlite3_close(db); continue }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
+
+        var tables: [String] = []
+        var st: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &st, nil) == SQLITE_OK {
+            while sqlite3_step(st) == SQLITE_ROW { if let c = sqlite3_column_text(st, 0) { tables.append(String(cString: c)) } }
+        }
+        sqlite3_finalize(st)
+
+        for t in tables {
+            let up = t.uppercased()
+            if ["MESSAGE", "MEDIA", "RECEIPT", "CALL", "EVENT", "REACTION", "POLL"].contains(where: { up.contains($0) }) { continue }
+            var cols: [String] = []
+            if sqlite3_prepare_v2(db, "PRAGMA table_info(\"\(t)\")", -1, &st, nil) == SQLITE_OK {
+                while sqlite3_step(st) == SQLITE_ROW { if let c = sqlite3_column_text(st, 1) { cols.append(String(cString: c)) } }
+            }
+            sqlite3_finalize(st)
+            let idCols = cols.filter { let u = $0.uppercased(); return u.contains("JID") || u.hasSuffix("LID") || u.contains("WHATSAPPID") }
+            let nameCols = cols.filter { let u = $0.uppercased(); return u.contains("NAME") && !u.contains("FILE") && !u.contains("PATH") }
+            guard !idCols.isEmpty, !nameCols.isEmpty else { continue }
+            let sql = "SELECT " + (idCols + nameCols).map { "\"\($0)\"" }.joined(separator: ",") + " FROM \"\(t)\" LIMIT 200000"
+            guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { sqlite3_finalize(st); continue }
+            while sqlite3_step(st) == SQLITE_ROW {
+                var ids: [String] = []
+                for i in 0..<idCols.count {
+                    if let c = sqlite3_column_text(st, Int32(i)) { let v = String(cString: c); if v.contains("@") { ids.append(v.lowercased()) } }
+                }
+                var name: String?
+                for j in 0..<nameCols.count {
+                    if let c = sqlite3_column_text(st, Int32(idCols.count + j)) {
+                        let v = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if looksLikeName(v) { name = v; break }
+                    }
+                }
+                let lids = ids.filter { $0.hasSuffix("@lid") }, pns = ids.filter { $0.hasSuffix("@s.whatsapp.net") }
+                if lids.count == 1 && pns.count == 1 { links.append((lids[0], pns[0])) }
+                // Só associa nome quando a linha fala de um único contato/grupo
+                let distinct = Set(ids)
+                if let n = name, distinct.count == 1 || (lids.count == 1 && pns.count == 1 && distinct.count == 2) {
+                    for id in distinct where names[id] == nil { names[id] = n }
+                }
+            }
+            sqlite3_finalize(st)
+        }
+    }
+    for (l, p) in links {
+        if names[l] == nil, let n = names[p] { names[l] = n }
+        if names[p] == nil, let n = names[l] { names[p] = n }
+    }
+    return names
+}
+
+/// Descarta valores que não são nomes (códigos base64, identificadores, números soltos).
+func looksLikeName(_ v: String) -> Bool {
+    guard !v.isEmpty, v.count <= 80, !v.contains("@") else { return false }
+    let b64 = v.range(of: "^[A-Za-z0-9+/_-]+={0,2}$", options: .regularExpression) != nil
+    if b64 && (v.hasSuffix("=") || (v.count >= 16 && !v.contains(" "))) { return false }
+    if v.hasPrefix("+") && v.dropFirst().contains(where: { $0.isLetter }) { return false }
+    return v.contains(where: { $0.isLetter || $0.isNumber })
+}
+
+func whatsappLabel(_ jid: String, names: [String: String]) -> String {
+    let id = jid.lowercased()
+    let isGroup = id.hasSuffix("@g.us")
+    if let n = names[id] {
+        return isGroup && !n.lowercased().hasPrefix("grupo") ? "Grupo \(n)" : n
+    }
+    let code = jid.split(separator: "@").first.map(String.init) ?? jid
+    if isGroup { return "Grupo sem nome (…\(code.suffix(4)))" }
+    if id.hasSuffix("@s.whatsapp.net") { return "+" + code }
+    return "Conversa sem nome (…\(code.suffix(4)))"
+}
+
 func findWhatsApp() -> [Target] {
     var out: [Target] = []
     let hints = ["net.whatsapp.WhatsApp", "WhatsApp"]
@@ -317,11 +412,9 @@ func findWhatsApp() -> [Target] {
 
     if fm.fileExists(atPath: whatsappMedia) {
         if let chats = try? fm.contentsOfDirectory(atPath: whatsappMedia) {
+            let names = whatsappNames()
             for c in chats where c != ".DS_Store" {
-                let label: String
-                if c.hasSuffix("@g.us") { label = "Grupo " + c.replacingOccurrences(of: "@g.us", with: "") }
-                else if let at = c.firstIndex(of: "@") { label = "Conversa +" + c[..<at] }
-                else { label = c }
+                let label = whatsappLabel(c, names: names)
                 out.append(Target(url: URL(fileURLWithPath: whatsappMedia).appendingPathComponent(c),
                                   name: "WhatsApp: \(label)", hints: hints, note: mediaNote, selected: false))
             }
@@ -665,6 +758,43 @@ final class Cleaner: ObservableObject {
 
 // MARK: - Interface
 
+/// Paleta Social da Trendsy. Cores de texto têm variante para o modo claro (contraste ≥ 4.5:1).
+extension NSColor {
+    convenience init(hex: UInt32) {
+        self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                  blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+}
+func dynamic(light: UInt32, dark: UInt32) -> Color {
+    Color(NSColor(name: nil) { a in
+        NSColor(hex: a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light)
+    })
+}
+enum Brand {
+    static let lime = Color(NSColor(hex: 0xCEEE4B))                // preenchimentos (texto preto em cima: 16:1)
+    static let limeText = dynamic(light: 0x3F4A0A, dark: 0xCEEE4B) // 7.8:1 no claro, 13.8:1 no escuro
+    static let blue = dynamic(light: 0x2A64B4, dark: 0x99C3FA)
+    static let background = dynamic(light: 0xE8E8E8, dark: 0x151519)
+    static let support = Color(NSColor(hex: 0x565656))
+}
+/// Poppins vai dentro do app (licença OFL). Se faltar, o sistema usa a fonte padrão.
+func poppins(_ weight: String, _ size: CGFloat, relativeTo style: Font.TextStyle) -> Font {
+    .custom("Poppins-\(weight)", size: size, relativeTo: style)
+}
+
+/// Botão principal: painel lima com texto preto em caixa alta, como nas peças Trendsy.
+struct LimeButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.black)
+            .background(Brand.lime, in: Capsule())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.99 : 1)
+            .contentShape(Capsule())
+    }
+}
+
 /// Símbolo com alternativa para macOS mais antigos.
 func symbol(_ name: String, fallback: String) -> String {
     NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : fallback
@@ -689,6 +819,7 @@ struct ContentView: View {
                         ForEach(safeIdx, id: \.self) { i in CategoryRow(cat: $c.cats[i], busy: c.busy) }
                     } header: {
                         Label("Seguro limpar · o app recria sozinho", systemImage: "checkmark.shield")
+                            .foregroundStyle(Brand.limeText)
                     }
                 }
                 if !reviewIdx.isEmpty {
@@ -707,8 +838,10 @@ struct ContentView: View {
                 }
             }
             .listStyle(.inset)
+            .scrollContentBackground(.hidden)
             .overlay { if c.cats.isEmpty { ProgressView("Analisando o Mac…") } }
         }
+        .background(Brand.background)
         .frame(minWidth: 600, minHeight: 640)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -728,6 +861,8 @@ struct ContentView: View {
         }
     }
 
+    var buttonText: String { buttonLabel.uppercased(with: Locale(identifier: "pt_BR")) }
+
     var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             DiskBar(free: c.free, total: c.total, freeing: c.busy ? 0 : c.selectedTotal, reduceMotion: reduceMotion)
@@ -746,15 +881,15 @@ struct ContentView: View {
 
             Button(action: c.clean) {
                 HStack(spacing: 10) {
-                    if c.busy { ProgressView().controlSize(.small) } else { Image(systemName: cleanSymbol) }
-                    Text(buttonLabel).lineLimit(1).truncationMode(.middle)
+                    if c.busy { ProgressView().controlSize(.small).colorScheme(.light) } else { Image(systemName: cleanSymbol) }
+                    Text(buttonText).lineLimit(1).truncationMode(.middle)
                 }
-                .font(.title3.weight(.semibold))
+                .font(poppins("ExtraBoldItalic", 18, relativeTo: .title3))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                .padding(.vertical, 14)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(LimeButtonStyle())
+            .accessibilityLabel(buttonLabel)
             .disabled(c.busy || c.selectedTotal == 0)
 
             if case .cleaning(let s) = c.phase {
@@ -763,9 +898,10 @@ struct ContentView: View {
 
             if let r = c.result {
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.title3)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Brand.limeText).font(.title3)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Pronto! \(fmtBytes(r.freed)) liberados").fontWeight(.semibold)
+                        Text("PRONTO! \(fmtBytes(r.freed)) LIBERADOS")
+                            .font(poppins("ExtraBoldItalic", 15, relativeTo: .headline))
                         if r.trashed > 0 { Text("\(fmtBytes(r.trashed)) foram para a Lixeira. Esvazie a Lixeira para liberar.").font(.callout) }
                         if r.failed > 0 { Text("\(r.failed) itens estavam em uso e foram pulados.").font(.callout).foregroundStyle(.secondary) }
                     }
@@ -775,7 +911,7 @@ struct ContentView: View {
                         .accessibilityLabel("Fechar aviso")
                 }
                 .padding(10)
-                .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .background(Brand.lime.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
             }
         }
         .padding(20)
@@ -789,12 +925,12 @@ struct DiskBar: View {
 
     var usedRatio: Double { total > 0 ? Double(total - free) / Double(total) : 0 }
     var freeingRatio: Double { total > 0 ? min(Double(freeing) / Double(total), usedRatio) : 0 }
-    var tint: Color { usedRatio > 0.9 ? .red : usedRatio > 0.8 ? .orange : .accentColor }
+    var tint: Color { usedRatio > 0.9 ? .red : usedRatio > 0.8 ? .orange : Brand.blue }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Label("SSD interno", systemImage: "internaldrive").font(.headline)
+                Label("SSD interno", systemImage: "internaldrive").font(poppins("SemiBold", 14, relativeTo: .headline))
                 Spacer()
                 Text("\(fmtBytes(free)) livres de \(fmtBytes(total))").font(.body).monospacedDigit()
             }
@@ -804,7 +940,7 @@ struct DiskBar: View {
                     Capsule().fill(Color.secondary.opacity(0.2))
                     Capsule().fill(tint).frame(width: max(0, w * usedRatio))
                     // trecho que vai ficar livre
-                    Rectangle().fill(Color.green)
+                    Rectangle().fill(Brand.lime)
                         .frame(width: max(4, w * freeingRatio))
                         .offset(x: max(0, w * (usedRatio - freeingRatio) - (w * freeingRatio < 4 ? 4 - w * freeingRatio : 0)))
                         .opacity(freeing > 0 ? 1 : 0)
@@ -820,7 +956,7 @@ struct DiskBar: View {
 
             Text(freeing > 0 ? "Depois da limpeza: \(fmtBytes(free + freeing)) livres (+\(fmtBytes(freeing)))" : " ")
                 .font(.callout).monospacedDigit()
-                .foregroundStyle(.green)
+                .foregroundStyle(Brand.limeText)
         }
     }
 }
@@ -852,7 +988,7 @@ struct CategoryRow: View {
                     .disabled(!cat.hasDeletable || busy)
                 Image(systemName: cat.def.icon)
                     .frame(width: 22)
-                    .foregroundStyle(cat.def.risky ? Color.orange : Color.accentColor)
+                    .foregroundStyle(cat.def.risky ? Color.orange : Brand.blue)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(cat.def.name).fontWeight(.medium)
@@ -939,6 +1075,17 @@ func dryRun() {
 enum Entry {
     static func main() {
         if CommandLine.arguments.contains("--scan") { dryRun(); return }
+        if CommandLine.arguments.contains("--wa-check") {
+            let chats = ((try? fm.contentsOfDirectory(atPath: whatsappMedia)) ?? []).filter { $0.contains("@") }
+            let names = whatsappNames()
+            let named = chats.filter { names[$0.lowercased()] != nil }
+            print("conversas: \(chats.count), com nome: \(named.count), nomes no banco: \(names.count)")
+            for k in ["@g.us", "@lid", "@s.whatsapp.net"] {
+                let all = chats.filter { $0.hasSuffix(k) }
+                print("  \(k): \(all.filter { names[$0.lowercased()] != nil }.count)/\(all.count)")
+            }
+            return
+        }
         LimpaLimpaApp.main()
     }
 }
