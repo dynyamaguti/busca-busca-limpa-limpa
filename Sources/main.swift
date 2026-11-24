@@ -96,7 +96,8 @@ struct Target {
     let url: URL
     let name: String
     var hints: [String] = []   // apps que precisam estar fechados (bundle id ou nome)
-    var note: String? = nil    // explicação mostrada ao passar o mouse
+    var note: String? = nil    // explicação completa (botão ⓘ)
+    var warning: String? = nil // aviso curto, sempre visível embaixo do item
     var selected = true        // marcado por padrão dentro da categoria
     var deletable = true       // false = só informa (ex.: arquivos protegidos do macOS)
     var sizeOf: [URL]? = nil   // mede o tamanho destes caminhos em vez de `url`
@@ -122,9 +123,11 @@ struct CleanItem: Identifiable {
     let size: Int64
     let hints: [String]
     var note: String? = nil
+    var warning: String? = nil
     var deletable = true
     var action: ItemAction? = nil
     var selected = true
+    var showInfo = false
 }
 
 struct CategoryState: Identifiable {
@@ -237,7 +240,7 @@ func makeCategories() -> [CategoryDef] {
             findWhatsApp()
         },
         CategoryDef(key: "ai", name: "Modelos de IA", icon: "brain",
-                    detail: "Modelos baixados por apps de IA. Passe o mouse em cada item antes de marcar.",
+                    detail: "Modelos baixados por apps de IA. Leia o aviso de cada item antes de marcar.",
                     defaultOn: false, risky: true,
                     info: "Arquivos grandes que apps de IA baixam sozinhos, como Claude, Chrome (Gemini Nano), DaVinci Resolve, Hugging Face, Ollama e LM Studio. Só apague o que você NÃO usa: se o app precisar, ele baixa tudo de novo (vários GB). Nenhum item vem marcado; escolha um por um.") {
             findAIModels()
@@ -295,7 +298,7 @@ func scanCategories(_ defs: [CategoryDef], enabled: (CategoryDef) -> Bool, progr
                 s = (t.sizeOf ?? [t.url]).reduce(0) { $0 + allocatedSize($1) }
             }
             if s > 0 || (!t.deletable && t.sizeOf?.isEmpty == true) {
-                items.append(CleanItem(url: t.url, name: t.name, size: s, hints: t.hints, note: t.note,
+                items.append(CleanItem(url: t.url, name: t.name, size: s, hints: t.hints, note: t.note, warning: t.warning,
                                        deletable: t.deletable, action: t.action, selected: t.selected))
             }
         }
@@ -326,7 +329,7 @@ func findWhatsApp() -> [Target] {
             // Pasta existe mas o macOS bloqueou a leitura
             out.append(Target(url: URL(fileURLWithPath: whatsappMedia), name: "WhatsApp: mídias (sem permissão para ler)",
                               note: "O macOS protege a pasta de mídias do WhatsApp. Para o app conseguir medir e limpar, ative-o em Ajustes › Privacidade e Segurança › Acesso Total ao Disco e abra o app de novo.",
-                              deletable: false, sizeOf: [],
+                              warning: "Precisa de Acesso Total ao Disco", deletable: false, sizeOf: [],
                               action: ItemAction(label: "Dar permissão") { openSettings("com.apple.preference.security?Privacy_AllFiles") }))
         }
     }
@@ -345,7 +348,7 @@ func findWhatsApp() -> [Target] {
                                 ("~/Library/Application Support/Arc/User Data", "Arc", "company.thebrowser.Browser")] {
         for u in expand(base + "/*/IndexedDB/https_web.whatsapp.com_*") {
             out.append(Target(url: u, name: "WhatsApp Web no \(label) (\(u.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent))",
-                              hints: [hint], note: webNote, selected: false))
+                              hints: [hint], note: webNote, warning: "Desconecta o WhatsApp Web: será preciso ler o QR code de novo", selected: false))
         }
     }
     return out
@@ -367,7 +370,7 @@ func findAIModels() -> [Target] {
         if exists(u) {
             out.append(Target(url: u, name: label, hints: ["Claude", "com.anthropic.claudefordesktop"],
                               note: "Ambiente que o app do Claude baixa para rodar tarefas no Mac (Cowork, modo agente, Claude Code no app). Se você usa o Claude no Mac, NÃO apague: na próxima tarefa ele baixa tudo de novo (cerca de 10 GB). Só vale apagar se você não usa esses recursos.",
-                              selected: false))
+                              warning: "Se você usa o Claude no Mac, não apague: ele baixa tudo de novo", selected: false))
         }
     }
 
@@ -386,7 +389,7 @@ func findAIModels() -> [Target] {
                               3. Se essa opção não aparecer: digite chrome://flags, procure \"Enables optimization guide on device\", mude para Disabled e clique em Reiniciar.
                               4. Depois volte aqui e apague o item.
                               """,
-                              selected: false,
+                              warning: "Desative a IA no Chrome antes, senão ele baixa de novo", selected: false,
                               action: ItemAction(label: "Config. do Chrome") {
                                   let p = Process()
                                   p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -404,7 +407,7 @@ func findAIModels() -> [Target] {
                                                 : "DaVinci Resolve: pacote de IA \(u.lastPathComponent.prefix(6))",
                           hints: ["com.blackmagic-design.DaVinciResolve"],
                           note: "Modelos de IA que o Resolve baixa para recursos como Voice Isolation, Magic Mask, IntelliScript e conversão de voz. Se você usa esses recursos, NÃO apague: o Resolve vai pedir para baixar de novo, ou o recurso deixa de funcionar até reinstalar o Resolve.",
-                          selected: false))
+                          warning: "Se você usa Voice Isolation ou Magic Mask, não apague", selected: false))
     }
 
     // Hugging Face (Whisper, MLX, etc.). Os arquivos ficam em pasta compartilhada, então é um item só.
@@ -415,7 +418,7 @@ func findAIModels() -> [Target] {
         }
         out.append(Target(url: hf, name: "Hugging Face: " + (models.isEmpty ? "modelos baixados" : models.joined(separator: ", ")),
                           note: "Modelos baixados por ferramentas de IA (ex.: transcrição com Whisper, apps com MLX): \(models.joined(separator: ", ")). Se a ferramenta for usada de novo, ela baixa os modelos outra vez.",
-                          selected: false))
+                          warning: "A ferramenta baixa de novo se for usada", selected: false))
     }
 
     // Ollama e LM Studio
@@ -423,7 +426,7 @@ func findAIModels() -> [Target] {
     if exists(ollama) {
         out.append(Target(url: ollama, name: "Ollama: todos os modelos", hints: ["Ollama"],
                           note: "Todos os modelos de IA locais do Ollama. Para apagar só alguns, use \"ollama rm <modelo>\" no Terminal.",
-                          selected: false))
+                          warning: "Apaga todos os modelos do Ollama", selected: false))
     }
     for u in expand("~/.lmstudio/models/*/*") {
         out.append(Target(url: u, name: "LM Studio: \(u.deletingLastPathComponent().lastPathComponent)/\(u.lastPathComponent)",
@@ -445,7 +448,7 @@ func findAIModels() -> [Target] {
     if !aiDirs.isEmpty {
         out.append(Target(url: URL(fileURLWithPath: "/System/Library/AssetsV2"), name: "Apple Intelligence (modelos do macOS)",
                           note: "Modelos que o macOS instala sozinho nas atualizações (Ferramentas de Escrita, resumos, Image Playground, Limpar nas Fotos). Ficam numa pasta protegida do sistema, então nenhum app pode apagá-los. Para liberar esse espaço: Ajustes › Apple Intelligence e Siri › desative Apple Intelligence. O macOS remove os modelos sozinho; se você reativar, ele baixa de novo.",
-                          deletable: false, sizeOf: aiDirs,
+                          warning: "Protegido pelo macOS: desative nos Ajustes para liberar", deletable: false, sizeOf: aiDirs,
                           action: ItemAction(label: "Abrir Ajustes") { openSettings("com.apple.Siri-Settings.extension") }))
     }
     return out
@@ -576,7 +579,9 @@ final class Cleaner: ObservableObject {
             let results = scanCategories(defs, enabled: { saved.object(forKey: "enabled.\($0.key)") as? Bool ?? $0.defaultOn },
                                          progress: { name in DispatchQueue.main.async { self.phase = .scanning(name) } })
             DispatchQueue.main.async {
-                self.cats = results
+                var r = results
+                if CommandLine.arguments.contains("--expand") { for i in r.indices { r[i].expanded = true } }
+                self.cats = r
                 self.phase = .idle
                 self.refreshDisk()
             }
@@ -660,62 +665,88 @@ final class Cleaner: ObservableObject {
 
 // MARK: - Interface
 
+/// Símbolo com alternativa para macOS mais antigos.
+func symbol(_ name: String, fallback: String) -> String {
+    NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : fallback
+}
+let cleanSymbol = symbol("bubbles.and.sparkles", fallback: "sparkles")
+
 struct ContentView: View {
-    @StateObject var c = Cleaner()
+    @ObservedObject var c: Cleaner
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
+
+    var safeIdx: [Int] { c.cats.indices.filter { !c.cats[$0].def.risky && !c.cats[$0].items.isEmpty } }
+    var reviewIdx: [Int] { c.cats.indices.filter { c.cats[$0].def.risky && !c.cats[$0].items.isEmpty } }
+    var emptyNames: [String] { c.cats.filter { $0.items.isEmpty }.map(\.def.name) }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             List {
-                ForEach($c.cats) { $cat in CategoryRow(cat: $cat, busy: c.busy) }
+                if !safeIdx.isEmpty {
+                    Section {
+                        ForEach(safeIdx, id: \.self) { i in CategoryRow(cat: $c.cats[i], busy: c.busy) }
+                    } header: {
+                        Label("Seguro limpar · o app recria sozinho", systemImage: "checkmark.shield")
+                    }
+                }
+                if !reviewIdx.isEmpty {
+                    Section {
+                        ForEach(reviewIdx, id: \.self) { i in CategoryRow(cat: $c.cats[i], busy: c.busy) }
+                    } header: {
+                        Label("Revise antes de apagar", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                if !emptyNames.isEmpty && !c.cats.isEmpty {
+                    Section {
+                        Text("Nada encontrado em: " + emptyNames.joined(separator: ", "))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
             }
             .listStyle(.inset)
             .overlay { if c.cats.isEmpty { ProgressView("Analisando o Mac…") } }
-            Divider()
-            footer
         }
-        .frame(minWidth: 580, minHeight: 680)
+        .frame(minWidth: 600, minHeight: 640)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { c.scan() } label: { Label("Analisar de novo", systemImage: "arrow.clockwise") }
+                    .help("Analisar o Mac de novo (⌘R)")
+                    .disabled(c.busy)
+            }
+        }
         .onAppear { c.refreshDisk(); c.scan() }
     }
-
-    var usedRatio: Double { c.total > 0 ? Double(c.total - c.free) / Double(c.total) : 0 }
 
     var buttonLabel: String {
         switch c.phase {
         case .scanning(let s): return s.isEmpty ? "Analisando…" : "Analisando \(s)…"
         case .cleaning: return "Limpando…"
-        case .idle: return c.selectedTotal > 0 ? "Liberar \(fmtBytes(c.selectedTotal))" : "Nada para limpar"
+        case .idle: return c.selectedTotal > 0 ? "Liberar \(fmtBytes(c.selectedTotal))" : "Nada marcado para limpar"
         }
     }
 
     var header: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
-                    .background(LinearGradient(colors: [.teal, .blue], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                in: RoundedRectangle(cornerRadius: 12))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Busca Busca Limpa Limpa").font(.title2.bold())
-                    Text("Libere espaço no SSD interno com um clique").font(.callout).foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            DiskBar(free: c.free, total: c.total, freeing: c.busy ? 0 : c.selectedTotal, reduceMotion: reduceMotion)
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Label("SSD interno", systemImage: "internaldrive").font(.callout.weight(.medium))
+            if !c.hasFullDiskAccess {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.shield").foregroundStyle(.orange)
+                    Text("Sem Acesso Total ao Disco: WhatsApp, Lixeira e Safari ficam de fora.")
+                        .font(.callout)
                     Spacer()
-                    Text("\(fmtBytes(c.free)) livres de \(fmtBytes(c.total))").font(.callout).monospacedDigit()
+                    Button("Permitir…") { openSettings("com.apple.preference.security?Privacy_AllFiles") }
                 }
-                ProgressView(value: usedRatio).tint(usedRatio > 0.9 ? .red : usedRatio > 0.8 ? .orange : .blue)
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
 
             Button(action: c.clean) {
                 HStack(spacing: 10) {
-                    if c.busy { ProgressView().controlSize(.small) } else { Image(systemName: "sparkles") }
+                    if c.busy { ProgressView().controlSize(.small) } else { Image(systemName: cleanSymbol) }
                     Text(buttonLabel).lineLimit(1).truncationMode(.middle)
                 }
                 .font(.title3.weight(.semibold))
@@ -725,10 +756,9 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(c.busy || c.selectedTotal == 0)
-            .keyboardShortcut(.defaultAction)
 
             if case .cleaning(let s) = c.phase {
-                Text(s).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(s).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
 
             if let r = c.result {
@@ -736,11 +766,13 @@ struct ContentView: View {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.title3)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Pronto! \(fmtBytes(r.freed)) liberados").fontWeight(.semibold)
-                        if r.trashed > 0 { Text("\(fmtBytes(r.trashed)) foram para a Lixeira — esvazie para liberar.").font(.caption) }
-                        if r.failed > 0 { Text("\(r.failed) itens estavam em uso e foram pulados.").font(.caption).foregroundStyle(.secondary) }
+                        if r.trashed > 0 { Text("\(fmtBytes(r.trashed)) foram para a Lixeira. Esvazie a Lixeira para liberar.").font(.callout) }
+                        if r.failed > 0 { Text("\(r.failed) itens estavam em uso e foram pulados.").font(.callout).foregroundStyle(.secondary) }
                     }
                     Spacer()
-                    Button { c.result = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                    Button { c.result = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Fechar aviso")
                 }
                 .padding(10)
                 .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
@@ -748,21 +780,48 @@ struct ContentView: View {
         }
         .padding(20)
     }
+}
 
-    var footer: some View {
-        HStack {
-            Button { c.scan() } label: { Label("Analisar de novo", systemImage: "arrow.clockwise") }
-                .disabled(c.busy)
-            Spacer()
-            if !c.hasFullDiskAccess {
-                Text("Sem Acesso Total ao Disco: Lixeira e Safari ficam de fora.").font(.caption).foregroundStyle(.secondary)
-                Button("Permitir…") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
-                }
+/// Barra do SSD com prévia do "depois da limpeza".
+struct DiskBar: View {
+    let free: Int64, total: Int64, freeing: Int64
+    let reduceMotion: Bool
+
+    var usedRatio: Double { total > 0 ? Double(total - free) / Double(total) : 0 }
+    var freeingRatio: Double { total > 0 ? min(Double(freeing) / Double(total), usedRatio) : 0 }
+    var tint: Color { usedRatio > 0.9 ? .red : usedRatio > 0.8 ? .orange : .accentColor }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("SSD interno", systemImage: "internaldrive").font(.headline)
+                Spacer()
+                Text("\(fmtBytes(free)) livres de \(fmtBytes(total))").font(.body).monospacedDigit()
             }
+            GeometryReader { g in
+                let w = g.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.2))
+                    Capsule().fill(tint).frame(width: max(0, w * usedRatio))
+                    // trecho que vai ficar livre
+                    Rectangle().fill(Color.green)
+                        .frame(width: max(4, w * freeingRatio))
+                        .offset(x: max(0, w * (usedRatio - freeingRatio) - (w * freeingRatio < 4 ? 4 - w * freeingRatio : 0)))
+                        .opacity(freeing > 0 ? 1 : 0)
+                }
+                .clipShape(Capsule())
+            }
+            .frame(height: 10)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.6), value: free)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: freeing)
+            .accessibilityElement()
+            .accessibilityLabel("Uso do SSD interno")
+            .accessibilityValue("\(Int(usedRatio * 100)) por cento usado")
+
+            Text(freeing > 0 ? "Depois da limpeza: \(fmtBytes(free + freeing)) livres (+\(fmtBytes(freeing)))" : " ")
+                .font(.callout).monospacedDigit()
+                .foregroundStyle(.green)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
     }
 }
 
@@ -770,79 +829,89 @@ struct CategoryRow: View {
     @Binding var cat: CategoryState
     let busy: Bool
 
-    var tooltip: String { cat.def.info.isEmpty ? cat.def.detail : cat.def.info }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        DisclosureGroup(isExpanded: $cat.expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !cat.def.info.isEmpty {
+                    Text(cat.def.info)
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 2)
+                }
+                ForEach(Array(cat.items.indices.prefix(300)), id: \.self) { i in itemRow(i) }
+                if cat.items.count > 300 {
+                    Text("+ \(cat.items.count - 300) itens").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, 34)
+            .padding(.vertical, 4)
+        } label: {
             HStack(spacing: 10) {
-                Toggle("", isOn: $cat.enabled).labelsHidden().toggleStyle(.checkbox)
+                Toggle(cat.def.name, isOn: Binding(get: { cat.enabled && cat.hasDeletable }, set: { cat.enabled = $0 }))
+                    .labelsHidden().toggleStyle(.checkbox)
                     .disabled(!cat.hasDeletable || busy)
                 Image(systemName: cat.def.icon)
                     .frame(width: 22)
                     .foregroundStyle(cat.def.risky ? Color.orange : Color.accentColor)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(cat.def.name).fontWeight(.medium)
-                        Image(systemName: "info.circle").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text(cat.def.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(cat.def.name).fontWeight(.medium)
+                    Text(cat.def.detail).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
-                .help(tooltip)
+                .contentShape(Rectangle())
+                .onTapGesture { cat.expanded.toggle() }
                 Spacer()
                 Text(cat.hasDeletable ? fmtBytes(cat.enabled ? cat.selectedSize : cat.totalSize) : "—")
                     .monospacedDigit()
                     .foregroundStyle(cat.enabled ? .primary : .secondary)
-                Button { cat.expanded.toggle() } label: { Image(systemName: cat.expanded ? "chevron.up" : "chevron.down") }
-                    .buttonStyle(.borderless)
-                    .disabled(cat.items.isEmpty)
-                    .help("Ver itens")
+                    .accessibilityLabel(cat.enabled ? "\(fmtBytes(cat.selectedSize)) marcados" : "\(fmtBytes(cat.totalSize)) encontrados")
             }
-            if cat.expanded && !cat.items.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(cat.items.indices.prefix(300)), id: \.self) { i in
-                        itemRow(i)
-                    }
-                    if cat.items.count > 300 {
-                        Text("+ \(cat.items.count - 300) itens").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.leading, 34)
-                .padding(.bottom, 4)
-            }
+            .padding(.vertical, 4)
         }
-        .padding(.vertical, 4)
-        .opacity(cat.items.isEmpty ? 0.5 : 1)
     }
 
     @ViewBuilder
     func itemRow(_ i: Int) -> some View {
         let item = cat.items[i]
-        let help = (item.note.map { $0 + "\n\n" } ?? "") + item.url.path
-        let label = HStack(spacing: 6) {
-            Text(item.name).lineLimit(1).truncationMode(.middle)
-            if item.note != nil {
-                Image(systemName: item.deletable ? "info.circle" : "lock.circle")
-                    .foregroundStyle(item.deletable ? Color.secondary : Color.orange)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                if item.deletable {
+                    Toggle(item.name, isOn: $cat.items[i].selected).labelsHidden().toggleStyle(.checkbox)
+                        .disabled(busy || !cat.enabled)
+                } else {
+                    Image(systemName: "lock.fill").foregroundStyle(.secondary).frame(width: 14)
+                        .accessibilityLabel("Não pode ser apagado pelo app")
+                }
+                Text(item.name).lineLimit(1).truncationMode(.middle)
+                    .help(item.url.path)
+                if let note = item.note {
+                    Button { cat.items[i].showInfo.toggle() } label: { Image(systemName: "info.circle") }
+                        .buttonStyle(.borderless)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .help("Saiba mais")
+                        .accessibilityLabel("Saiba mais sobre \(item.name)")
+                        .popover(isPresented: $cat.items[i].showInfo, arrowEdge: .trailing) {
+                            Text(note)
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(width: 340, alignment: .leading)
+                                .padding(16)
+                        }
+                }
+                Spacer()
+                if let a = item.action {
+                    Button(a.label, action: a.run).controlSize(.small)
+                }
+                Text(item.size > 0 ? fmtBytes(item.size) : "—").monospacedDigit().foregroundStyle(.secondary)
             }
-            Spacer()
-            if let a = item.action {
-                Button(a.label, action: a.run).controlSize(.small)
+            if let w = item.warning {
+                Label(w, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .padding(.leading, item.deletable ? 22 : 20)
             }
-            Text(item.size > 0 ? fmtBytes(item.size) : "—").monospacedDigit().foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-        Group {
-            if item.deletable {
-                Toggle(isOn: $cat.items[i].selected) { label }
-                    .toggleStyle(.checkbox)
-                    .disabled(busy || !cat.enabled)
-            } else {
-                label.padding(.leading, 20)
-            }
-        }
-        .font(.caption)
-        .help(help)
+        .font(.callout)
         .contextMenu {
             Button("Mostrar no Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
         }
@@ -876,8 +945,25 @@ enum Entry {
 
 struct LimpaLimpaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @StateObject var cleaner = Cleaner()
+
     var body: some Scene {
-        WindowGroup("Busca Busca Limpa Limpa") { ContentView() }
+        WindowGroup("Busca Busca Limpa Limpa") { ContentView(c: cleaner) }
             .windowResizability(.contentMinSize)
+            .commands { CleanerCommands(c: cleaner) }
+    }
+}
+
+struct CleanerCommands: Commands {
+    @ObservedObject var c: Cleaner
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("Analisar de novo") { c.scan() }
+                .keyboardShortcut("r")
+                .disabled(c.busy)
+            Button(c.selectedTotal > 0 ? "Liberar \(fmtBytes(c.selectedTotal))" : "Liberar espaço") { c.clean() }
+                .keyboardShortcut(.delete, modifiers: [.command])
+                .disabled(c.busy || c.selectedTotal == 0)
+        }
     }
 }

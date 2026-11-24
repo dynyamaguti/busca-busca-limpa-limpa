@@ -1,4 +1,4 @@
-// Gera AppIcon.icns (gradiente + símbolo "sparkles"). Uso: swift make_icon.swift
+// Gera AppIcon.icns (gradiente + símbolo de bolhas). Uso: swift make_icon.swift
 import AppKit
 
 let dir = URL(fileURLWithPath: "AppIcon.iconset")
@@ -17,9 +17,9 @@ func render(_ px: Int) -> Data {
     let path = NSBezierPath(roundedRect: rect, xRadius: rect.width * 0.225, yRadius: rect.width * 0.225)
     NSGradient(starting: NSColor(calibratedRed: 0.20, green: 0.85, blue: 0.80, alpha: 1),
                ending: NSColor(calibratedRed: 0.15, green: 0.35, blue: 0.95, alpha: 1))!.draw(in: path, angle: -60)
-    let cfg = NSImage.SymbolConfiguration(pointSize: s * 0.42, weight: .semibold)
+    let cfg = NSImage.SymbolConfiguration(pointSize: s * 0.36, weight: .semibold)
         .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
-    if let sym = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+    if let sym = (NSImage(systemSymbolName: "bubbles.and.sparkles.fill", accessibilityDescription: nil) ?? NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil))?.withSymbolConfiguration(cfg) {
         let sz = sym.size
         sym.draw(in: NSRect(x: (s - sz.width) / 2, y: (s - sz.height) / 2, width: sz.width, height: sz.height))
     }

@@ -27,7 +27,8 @@ Abra o app. Ele analisa o Mac sozinho e mostra quanto dá para liberar. Clique e
 
 - Se o Chrome, o DaVinci Resolve ou outro app estiver aberto, o Busca Busca Limpa Limpa pede para fechá-lo (salve o projeto antes)
   ou continua sem ele.
-- A seta ao lado de cada categoria mostra os itens. Dá para desmarcar um por um.
+- Clique no nome de uma categoria para ver os itens. Dá para desmarcar um por um.
+- Atalhos: ⌘R analisa de novo, ⌘⌫ libera o espaço marcado.
 
 ## O que é limpo
 
@@ -41,7 +42,7 @@ Abra o app. Ele analisa o Mac sozinho e mostra quanto dá para liberar. Clique e
 | Caches gerais (`~/Library/Caches`) e logs | **WhatsApp**: mídias de cada conversa no app do Mac e dados do WhatsApp Web (desconecta, precisa ler o QR code de novo). Precisa de Acesso Total ao Disco. |
 | | **Modelos de IA**: Claude (máquina virtual ~10 GB), Gemini Nano do Chrome, pacotes de IA do Resolve, Hugging Face, Ollama, LM Studio. Nenhum vem marcado. |
 
-Passe o mouse sobre qualquer categoria ou item para ver o que ele é e o que acontece se apagar.
+Abra uma categoria (clique no nome ou no triângulo) para ver o que ela contém. Itens que pedem cuidado mostram um aviso em laranja, e o botão ⓘ explica em detalhes.
 Os modelos da **Apple Intelligence** aparecem só como informação, porque o macOS protege esses arquivos.
 O botão **Abrir Ajustes** leva direto à opção de desativar a Apple Intelligence, e aí o próprio macOS remove os modelos.
 
